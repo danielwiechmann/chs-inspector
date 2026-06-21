@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 import io
 
 import numpy as np
@@ -11,6 +12,11 @@ import plotly.graph_objects as go
 import streamlit as st
 from scipy.stats import mannwhitneyu, kruskal, spearmanr, pearsonr
 
+
+DEFAULT_CSV = (
+    "/Users/daniel24/Documents/0_Exaia/0_Research/NOESAIS/CHS_composite_clean/"
+    "0_handover/CHS_composite_handover/validation/all_subject_chs_scores_for_distributions.csv"
+)
 
 SCORE_COLS = [
     "chs_global_v1_1_z",
@@ -133,6 +139,12 @@ def prepare_loaded_data(df: pd.DataFrame) -> pd.DataFrame:
             df[c] = df[c].astype(str)
 
     return df
+
+
+@st.cache_data
+def load_data(path: str) -> pd.DataFrame:
+    df = pd.read_csv(path)
+    return prepare_loaded_data(df)
 
 
 @st.cache_data
@@ -291,6 +303,24 @@ def add_hover(df: pd.DataFrame, score: str) -> list[str]:
     return out
 
 
+def hc_reference_mask(df: pd.DataFrame) -> pd.Series:
+    """Rows that belong to the dedicated healthy-control reference group."""
+    if "group" not in df.columns:
+        return pd.Series(False, index=df.index)
+    return df["group"].astype(str).eq("HC")
+
+
+def comparison_rows_without_hc_reference(df: pd.DataFrame, show_hc_reference: bool) -> pd.DataFrame:
+    """
+    If HC is displayed as a separate reference trace, remove HC rows from all
+    comparison traces. This prevents the same HC individual from appearing both
+    in 'HC reference' and in a broader group such as 'AixCog' or 'cookie_theft'.
+    """
+    if not show_hc_reference:
+        return df.copy()
+    return df.loc[~hc_reference_mask(df)].copy()
+
+
 def plot_distribution(
     df: pd.DataFrame,
     score: str,
@@ -304,16 +334,21 @@ def plot_distribution(
 ) -> go.Figure:
     fig = go.Figure()
 
-    if facet_col and facet_col in df.columns and facet_col != "None":
+    # Split the displayed reference rows from the comparison rows.
+    # Critical: HC rows must not also contribute to an AixCog/task/group trace
+    # when the dedicated HC reference trace is active.
+    hc_ref = df.loc[hc_reference_mask(df)].copy()
+    comparison_df = comparison_rows_without_hc_reference(df, show_hc_reference)
+
+    if facet_col and facet_col in comparison_df.columns and facet_col != "None" and not comparison_df.empty:
         facet_values = ordered(
-            df[facet_col],
+            comparison_df[facet_col],
             TASK_ORDER if facet_col == "task" else DATASET_ORDER if facet_col == "dataset" else GROUP_ORDER,
         )
     else:
         facet_values = ["All"]
 
-    # HC reference is always AixCog HC within the current task-filtered context.
-    hc_ref = df[df["group"].astype(str) == "HC"].copy() if "group" in df.columns else pd.DataFrame()
+    # HC reference is taken from the currently filtered context.
     hc_vals = pd.to_numeric(hc_ref[score], errors="coerce").dropna() if not hc_ref.empty else pd.Series(dtype=float)
 
     if show_hc_reference and len(hc_vals) > 0:
@@ -377,7 +412,9 @@ def plot_distribution(
             ))
 
     for facet in facet_values:
-        sub = df.copy() if facet == "All" else df[df[facet_col].astype(str) == str(facet)].copy()
+        sub = comparison_df.copy() if facet == "All" else comparison_df[comparison_df[facet_col].astype(str) == str(facet)].copy()
+        if sub.empty:
+            continue
 
         groups = ordered(
             sub[group_col],
@@ -385,10 +422,6 @@ def plot_distribution(
         )
 
         for g in groups:
-            # Do not duplicate HC if the dedicated HC reference trace is active.
-            if show_hc_reference and group_col == "group" and str(g) == "HC":
-                continue
-
             gd = sub[sub[group_col].astype(str) == str(g)].copy()
             vals = pd.to_numeric(gd[score], errors="coerce")
             gd = gd.loc[vals.notna()].copy()
@@ -547,15 +580,25 @@ def main() -> None:
         uploaded_csv = st.file_uploader(
             "Upload CHS distribution CSV",
             type=["csv"],
-            help="Select the CHS distribution CSV from your local computer.",
+            help=(
+                "Use this when the app is deployed online. The selected CSV is uploaded "
+                "from the user's local computer to the Streamlit session."
+            ),
+        )
+        csv_path = st.text_input(
+            "Fallback/local CSV path",
+            DEFAULT_CSV,
+            help=(
+                "Used only when no CSV is uploaded. In online deployments, this path refers "
+                "to the server/repository filesystem, not the user's local computer."
+            ),
         )
 
-    if uploaded_csv is None:
-        st.info("Upload a CHS distribution CSV in the sidebar to start.")
-        st.stop()
-
-    df = load_uploaded_data(uploaded_csv.getvalue())
-    st.sidebar.success(f"Using uploaded CSV: {uploaded_csv.name}")
+    if uploaded_csv is not None:
+        df = load_uploaded_data(uploaded_csv.getvalue())
+        st.sidebar.success(f"Using uploaded CSV: {uploaded_csv.name}")
+    else:
+        df = load_data(csv_path)
 
     with st.sidebar:
         st.header("Objective score calibration")
@@ -681,7 +724,14 @@ def main() -> None:
         if facet_col != "None":
             by_cols = [facet_col, group_col]
 
-        summary = summary_table(filtered, [score], by_cols)
+        summary_source = comparison_rows_without_hc_reference(filtered, show_hc_reference)
+        summary = summary_table(summary_source, [score], by_cols)
+
+        if show_hc_reference:
+            st.caption(
+                "HC rows are shown only in the dedicated HC reference trace and are excluded "
+                "from the comparison groups and mean bars to avoid double-counting."
+            )
 
         st.plotly_chart(
             plot_mean_bars(summary, score, x_col=group_col),
