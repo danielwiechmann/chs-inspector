@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import io
 
 import numpy as np
@@ -12,11 +11,6 @@ import plotly.graph_objects as go
 import streamlit as st
 from scipy.stats import mannwhitneyu, kruskal, spearmanr, pearsonr
 
-
-DEFAULT_CSV = (
-    "/Users/daniel24/Documents/0_Exaia/0_Research/NOESAIS/CHS_composite_clean/"
-    "0_handover/CHS_composite_handover/validation/all_subject_chs_scores_for_distributions.csv"
-)
 
 SCORE_COLS = [
     "chs_global_v1_1_z",
@@ -139,12 +133,6 @@ def prepare_loaded_data(df: pd.DataFrame) -> pd.DataFrame:
             df[c] = df[c].astype(str)
 
     return df
-
-
-@st.cache_data
-def load_data(path: str) -> pd.DataFrame:
-    df = pd.read_csv(path)
-    return prepare_loaded_data(df)
 
 
 @st.cache_data
@@ -559,25 +547,15 @@ def main() -> None:
         uploaded_csv = st.file_uploader(
             "Upload CHS distribution CSV",
             type=["csv"],
-            help=(
-                "Use this when the app is deployed online. The selected CSV is uploaded "
-                "from the user's local computer to the Streamlit session."
-            ),
-        )
-        csv_path = st.text_input(
-            "Fallback/local CSV path",
-            DEFAULT_CSV,
-            help=(
-                "Used only when no CSV is uploaded. In online deployments, this path refers "
-                "to the server/repository filesystem, not the user's local computer."
-            ),
+            help="Select the CHS distribution CSV from your local computer.",
         )
 
-    if uploaded_csv is not None:
-        df = load_uploaded_data(uploaded_csv.getvalue())
-        st.sidebar.success(f"Using uploaded CSV: {uploaded_csv.name}")
-    else:
-        df = load_data(csv_path)
+    if uploaded_csv is None:
+        st.info("Upload a CHS distribution CSV in the sidebar to start.")
+        st.stop()
+
+    df = load_uploaded_data(uploaded_csv.getvalue())
+    st.sidebar.success(f"Using uploaded CSV: {uploaded_csv.name}")
 
     with st.sidebar:
         st.header("Objective score calibration")
